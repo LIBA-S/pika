@@ -46,9 +46,9 @@ endif
 dummy := $(shell ("$(CURDIR)/detect_environment" "$(CURDIR)/make_config.mk"))
 include make_config.mk
 CLEAN_FILES += $(CURDIR)/make_config.mk
-PLATFORM_LDFLAGS += $(TCMALLOC_LDFLAGS)
+# PLATFORM_LDFLAGS += $(TCMALLOC_LDFLAGS)
 PLATFORM_LDFLAGS += $(ROCKSDB_LDFLAGS)
-PLATFORM_CXXFLAGS += $(TCMALLOC_EXTENSION_FLAGS)
+# PLATFORM_CXXFLAGS += $(TCMALLOC_EXTENSION_FLAGS)
 
 # ----------------------------------------------
 OUTPUT = $(CURDIR)/output
