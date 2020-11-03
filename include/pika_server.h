@@ -88,10 +88,17 @@ enum TaskType {
   kBgSave,
 };
 
-class PikaServer {
+class PikaServer : public replica::StateMachine {
  public:
   PikaServer();
   ~PikaServer();
+
+  /*
+   * Implement replica::StateMachine
+   */
+  virtual Status OnApply(std::vector<MemLog::LogItem> logs) override;
+  virtual bool OnSlaveConnected(const std::string& ip, int64_t port, int fd,
+                                const std::vector<TableStruct>& table_structs) override;
 
   /*
    * Server init info
@@ -122,6 +129,7 @@ class PikaServer {
   void InitTableStruct();
   Status AddTableStruct(std::string table_name, uint32_t num);
   Status DelTableStruct(std::string table_name);
+  Status DelTableLog(const std::string& table_name);
   std::shared_ptr<Table> GetTable(const std::string& table_name);
   std::set<uint32_t> GetTablePartitionIds(const std::string& table_name);
   bool IsBgSaving();
@@ -313,6 +321,7 @@ class PikaServer {
   friend class PkClusterDelTableCmd;
   friend class PikaReplClientConn;
   friend class PkClusterInfoCmd;
+  friend class PikaApplyProcessor;
 
  private:
   /*
@@ -354,19 +363,24 @@ class PikaServer {
   PikaClientProcessor* pika_client_processor_;
   PikaDispatchThread* pika_dispatch_thread_;
 
-
   /*
-   * Slave used
+   * Replication used
    */
-  std::string master_ip_;
-  int master_port_;
-  int repl_state_;
-  int role_;
-  int last_meta_sync_timestamp_;
-  bool first_meta_sync_;
-  bool loop_partition_state_machine_;
-  bool force_full_sync_;
-  pthread_rwlock_t state_protector_; //protect below, use for master-slave mode
+  replica::ReplicationManager* pika_rm_;
+  PikaApplyProcessor* pika_apply_processor_;
+
+  ///*
+  // * Slave used
+  // */
+  //std::string master_ip_;
+  //int master_port_;
+  //int repl_state_;
+  //int role_;
+  //int last_meta_sync_timestamp_;
+  //bool first_meta_sync_;
+  //bool loop_partition_state_machine_;
+  //bool force_full_sync_;
+  //pthread_rwlock_t state_protector_; //protect below, use for master-slave mode
 
   /*
    * Bgsave used

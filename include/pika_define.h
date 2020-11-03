@@ -67,146 +67,9 @@ struct SlaveItem {
   struct timeval create_time;
 };
 
-enum ReplState {
-  kNoConnect   = 0,
-  kTryConnect  = 1,
-  kTryDBSync   = 2,
-  kWaitDBSync  = 3,
-  kWaitReply   = 4,
-  kConnected   = 5,
-  kError       = 6,
-// set to kDBNoConnect if execute cmd 'dbslaveof db no one'
-  kDBNoConnect = 7
-};
-
-// debug only
-const std::string ReplStateMsg[] = {
-  "kNoConnect",
-  "kTryConnect",
-  "kTryDBSync",
-  "kWaitDBSync",
-  "kWaitReply",
-  "kConnected",
-  "kError",
-  "kDBNoConnect"
-};
-
 enum SlotState {
   INFREE = 0,
   INBUSY = 1,
-};
-
-struct LogicOffset {
-  uint32_t term;
-  uint64_t index;
-  LogicOffset()
-    : term(0), index(0) {}
-  LogicOffset(uint32_t _term, uint64_t _index)
-    : term(_term), index(_index) {}
-  LogicOffset(const LogicOffset& other) {
-    term = other.term;
-    index = other.index;
-  }
-  bool operator==(const LogicOffset& other) const {
-    return term == other.term && index == other.index;
-  }
-  bool operator!=(const LogicOffset& other) const {
-    return term != other.term || index != other.index;
-  }
-
-
-  std::string ToString() const {
-    return "term: " + std::to_string(term) + " index: " + std::to_string(index);
-  }
-};
-
-struct BinlogOffset {
-  uint32_t filenum;
-  uint64_t offset;
-  BinlogOffset()
-      : filenum(0), offset(0) {}
-  BinlogOffset(uint32_t num, uint64_t off)
-      : filenum(num), offset(off) {}
-  BinlogOffset(const BinlogOffset& other) {
-    filenum = other.filenum;
-    offset = other.offset;
-  }
-  std::string ToString() const {
-    return "filenum: " + std::to_string(filenum) + " offset: " + std::to_string(offset);
-  }
-  bool operator==(const BinlogOffset& other) const {
-    if (filenum == other.filenum && offset == other.offset) {
-      return true;
-    }
-    return false;
-  }
-  bool operator!=(const BinlogOffset& other) const {
-    if (filenum != other.filenum || offset != other.offset) {
-      return true;
-    }
-    return false;
-  }
-
-  bool operator>(const BinlogOffset& other) const {
-    if (filenum > other.filenum
-        || (filenum == other.filenum && offset > other.offset)) {
-      return true;
-    }
-    return false;
-  }
-  bool operator<(const BinlogOffset& other) const {
-    if (filenum < other.filenum
-        || (filenum == other.filenum && offset < other.offset)) {
-      return true;
-    }
-    return false;
-  }
-  bool operator<=(const BinlogOffset& other) const {
-    if (filenum < other.filenum
-        || (filenum == other.filenum && offset <= other.offset)) {
-      return true;
-    }
-    return false;
-  }
-  bool operator>=(const BinlogOffset& other) const {
-    if (filenum > other.filenum
-        || (filenum == other.filenum && offset >= other.offset)) {
-      return true;
-    }
-    return false;
-  }
-};
-
-struct LogOffset {
-  LogOffset(const LogOffset& _log_offset) {
-    b_offset = _log_offset.b_offset;
-    l_offset = _log_offset.l_offset;
-  }
-  LogOffset() : b_offset(), l_offset() {
-  }
-  LogOffset(BinlogOffset _b_offset, LogicOffset _l_offset)
-    : b_offset(_b_offset), l_offset(_l_offset) {
-  }
-  bool operator<(const LogOffset& other) const {
-    return b_offset < other.b_offset;
-  }
-  bool operator==(const LogOffset& other) const {
-    return b_offset == other.b_offset;
-  }
-  bool operator<=(const LogOffset& other) const {
-    return b_offset <= other.b_offset;
-  }
-  bool operator>=(const LogOffset& other) const {
-    return b_offset >= other.b_offset;
-  }
-  bool operator>(const LogOffset& other) const {
-    return b_offset > other.b_offset;
-  }
-  std::string ToString() const  {
-    return b_offset.ToString() + " " + l_offset.ToString();
-  }
-  BinlogOffset b_offset;
-  LogicOffset  l_offset;
 };
 
 //dbsync arg
@@ -223,44 +86,6 @@ struct DBSyncArg {
             uint32_t _partition_id)
       : p(_p), ip(_ip), port(_port),
         table_name(_table_name), partition_id(_partition_id) {}
-};
-
-// rm define
-enum SlaveState {
-  kSlaveNotSync    = 0,
-  kSlaveDbSync     = 1,
-  kSlaveBinlogSync = 2,
-};
-
-// debug only
-const std::string SlaveStateMsg[] = {
-  "SlaveNotSync",
-  "SlaveDbSync",
-  "SlaveBinlogSync"
-};
-
-enum BinlogSyncState {
-  kNotSync         = 0,
-  kReadFromCache   = 1,
-  kReadFromFile    = 2,
-};
-
-// debug only
-const std::string BinlogSyncStateMsg[] = {
-  "NotSync",
-  "ReadFromCache",
-  "ReadFromFile"
-};
-
-struct BinlogChip {
-  LogOffset offset_;
-  std::string binlog_;
-  BinlogChip(LogOffset offset, std::string binlog) : offset_(offset), binlog_(binlog) {
-  }
-  BinlogChip(const BinlogChip& binlog_chip) {
-    offset_ = binlog_chip.offset_;
-    binlog_ = binlog_chip.binlog_;
-  }
 };
 
 struct PartitionInfo {
@@ -302,135 +127,6 @@ struct hash_partition_info {
   }
 };
 
-class Node {
- public:
-  Node(const std::string& ip, int port) : ip_(ip), port_(port) {
-  }
-  virtual ~Node() = default;
-  Node() : port_(0) {
-  }
-  const std::string& Ip() const {
-    return ip_;
-  }
-  int Port() const {
-    return port_;
-  }
-  std::string ToString() const {
-    return ip_ + ":" + std::to_string(port_);
-  }
- private:
-  std::string ip_;
-  int port_;
-};
-
-class RmNode : public Node {
- public:
-  RmNode(const std::string& ip, int port,
-         const PartitionInfo& partition_info)
-    : Node(ip, port),
-      partition_info_(partition_info),
-      session_id_(0),
-      last_send_time_(0),
-      last_recv_time_(0) {}
-
-  RmNode(const std::string& ip,
-         int port,
-         const std::string& table_name,
-         uint32_t partition_id)
-      : Node(ip, port),
-        partition_info_(table_name, partition_id),
-        session_id_(0),
-        last_send_time_(0),
-        last_recv_time_(0) {}
-
-  RmNode(const std::string& ip,
-         int port,
-         const std::string& table_name,
-         uint32_t partition_id,
-         int32_t session_id)
-      : Node(ip, port),
-        partition_info_(table_name, partition_id),
-        session_id_(session_id),
-        last_send_time_(0),
-        last_recv_time_(0) {}
-
-  RmNode(const std::string& table_name,
-         uint32_t partition_id)
-      : Node(),
-        partition_info_(table_name, partition_id),
-        session_id_(0),
-        last_send_time_(0),
-        last_recv_time_(0) {}
-  RmNode()
-      : Node(),
-      partition_info_(),
-      session_id_(0),
-      last_send_time_(0),
-      last_recv_time_(0) {}
-
-  virtual ~RmNode() = default;
-  bool operator==(const RmNode& other) const {
-    if (partition_info_.table_name_ == other.TableName()
-      && partition_info_.partition_id_ == other.PartitionId()
-      && Ip() == other.Ip() && Port() == other.Port()) {
-      return true;
-    }
-    return false;
-  }
-
-  const std::string& TableName() const {
-    return partition_info_.table_name_;
-  }
-  uint32_t PartitionId() const {
-    return partition_info_.partition_id_;
-  }
-  const PartitionInfo& NodePartitionInfo() const {
-    return partition_info_;
-  }
-  void SetSessionId(uint32_t session_id) {
-    session_id_ = session_id;
-  }
-  int32_t SessionId() const {
-    return session_id_;
-  }
-  std::string ToString() const {
-    return "partition=" + TableName() + "_" + std::to_string(PartitionId()) + ",ip_port="
-        + Ip() + ":" + std::to_string(Port()) + ",session id=" + std::to_string(SessionId());
-  }
-  void SetLastSendTime(uint64_t last_send_time) {
-    last_send_time_ = last_send_time;
-  }
-  uint64_t LastSendTime() const {
-    return last_send_time_;
-  }
-  void SetLastRecvTime(uint64_t last_recv_time) {
-    last_recv_time_ = last_recv_time;
-  }
-  uint64_t LastRecvTime() const {
-    return last_recv_time_;
-  }
- private:
-  PartitionInfo partition_info_;
-  int32_t session_id_;
-  uint64_t last_send_time_;
-  uint64_t last_recv_time_;
-};
-
-struct hash_rm_node {
-  size_t operator()(const RmNode& n) const {
-    return std::hash<std::string>()(n.TableName()) ^ std::hash<uint32_t>()(n.PartitionId()) ^ std::hash<std::string>()(n.Ip()) ^ std::hash<int>()(n.Port());
-  }
-};
-
-struct WriteTask {
-  struct RmNode rm_node_;
-  struct BinlogChip binlog_chip_;
-  LogOffset prev_offset_;
-  WriteTask(RmNode rm_node, BinlogChip binlog_chip, LogOffset prev_offset) :
-    rm_node_(rm_node), binlog_chip_(binlog_chip), prev_offset_(prev_offset) {
-  }
-};
-
 //slowlog define
 #define SLOWLOG_ENTRY_MAX_ARGC 32
 #define SLOWLOG_ENTRY_MAX_STRING 128
@@ -448,16 +144,16 @@ struct SlowlogEntry {
 const int SLAVE_ITEM_STAGE_ONE    = 1;
 const int SLAVE_ITEM_STAGE_TWO    = 2;
 
-//repl_state_
-const int PIKA_REPL_NO_CONNECT                  = 0;
-const int PIKA_REPL_SHOULD_META_SYNC            = 1;
-const int PIKA_REPL_META_SYNC_DONE              = 2;
-const int PIKA_REPL_ERROR                       = 3;
-
-//role
-const int PIKA_ROLE_SINGLE        = 0;
-const int PIKA_ROLE_SLAVE         = 1;
-const int PIKA_ROLE_MASTER        = 2;
+////repl_state_
+//const int PIKA_REPL_NO_CONNECT                  = 0;
+//const int PIKA_REPL_SHOULD_META_SYNC            = 1;
+//const int PIKA_REPL_META_SYNC_DONE              = 2;
+//const int PIKA_REPL_ERROR                       = 3;
+//
+////role
+//const int PIKA_ROLE_SINGLE        = 0;
+//const int PIKA_ROLE_SLAVE         = 1;
+//const int PIKA_ROLE_MASTER        = 2;
 
 /*
  * The size of Binlogfile

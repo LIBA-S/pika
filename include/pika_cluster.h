@@ -8,6 +8,7 @@
 
 #include "include/pika_command.h"
 
+using PartitionInfo = replica::ReplicationGroupID;
 
 Status ParseSlotGroup(const std::string& slot_group,
     std::set<uint32_t>* slots);

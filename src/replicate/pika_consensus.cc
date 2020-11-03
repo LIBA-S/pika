@@ -179,7 +179,7 @@ int SyncProgress::SlaveSize() {
   return slaves_.size();
 }
 
-LogOffset SyncProgress::InternalCalCommittedIndex(std::unordered_map<std::string, LogOffset> match_index) {
+LogOffset SyncProgress::InternalCalCommittedIndex(std::unordered_map<std::string, logoffset> match_index) {
   int consensus_level = g_pika_conf->consensus_level();
   if (consensus_level == 0) {
     return LogOffset();

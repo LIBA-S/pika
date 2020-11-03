@@ -27,6 +27,8 @@ class PikaBinlogReader {
   int Seek(std::shared_ptr<Binlog> logger, uint32_t filenum, uint64_t offset);
   bool ReadToTheEnd();
   void GetReaderStatus(uint32_t* cur_filenum, uint64_t* cur_offset);
+  void GetProducerStatus(uint32_t* end_filenum, uint64_t* end_offset);
+  uint64_t BinlogFileSize();
  private:
   bool GetNext(uint64_t* size);
   unsigned int ReadPhysicalRecord(slash::Slice *redult, uint32_t* filenum, uint64_t* offset);

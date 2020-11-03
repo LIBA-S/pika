@@ -21,6 +21,7 @@ class PikaClientConn: public pink::RedisConn {
     LogOffset offset;
     std::string table_name;
     uint32_t partition_id;
+    replica::CopysetId copyset_id;
   };
 
   // Auth related

@@ -340,28 +340,31 @@ bool PikaServer::readonly(const std::string& table_name, const std::string& key)
   return false;
 }
 
-bool PikaServer::ConsensusCheck(const std::string& table_name, const std::string& key) {
-  if (g_pika_conf->consensus_level() != 0) {
-    std::shared_ptr<Table> table = GetTable(table_name);
-    if (table == nullptr) {
-      return false;
-    }
-    uint32_t index = g_pika_cmd_table_manager->DistributeKey(
-        key, table->PartitionNum());
+void PikaServer::OnApply(std::vector<replica::MemLog::LogItem> logs) {
+  for (auto log : logs) {
+    ApplyTaskArg* apply_task = new ApplyTaskArg(std::move(log.offset), std::move(log.task));
+    pika_apply_processor_->ScheduleApplyTask(apply_task_arg);
+  }
+}
 
-    std::shared_ptr<SyncMasterPartition> master_partition =
-      g_pika_rm->GetSyncMasterPartitionByName(PartitionInfo(table_name, index));
-    if (!master_partition) {
-      LOG(WARNING) << "Sync Master Partition: " << table_name << ":" << index
-        << ", NotFound";
-      return false;
-    }
-    Status s = master_partition->ConsensusSanityCheck();
-    if (!s.ok()) {
-      return false;
-    } else {
-      return true;
-    }
+bool PikaServer::ConsensusCheck(const std::string& table_name, const std::string& key) {
+  std::shared_ptr<Table> table = GetTable(table_name);
+  if (table == nullptr) {
+    return false;
+  }
+  uint32_t index = g_pika_cmd_table_manager->DistributeKey(
+      key, table->PartitionNum());
+
+  std::shared_ptr<replica::CopysetNode> copyset_node =
+    g_pika_rm->GetCopysetNode(replica::CopysetId(table_name, index));
+  if (!copyset_node) {
+    LOG(WARNING) << "Sync Master Partition: " << table_name << ":" << index
+                 << ", NotFound";
+    return false;
+  }
+  Status s = copyset_node->IsReady();
+  if (!s.ok()) {
+    return false;
   }
   return true;
 }
@@ -467,6 +470,18 @@ std::shared_ptr<Table> PikaServer::GetTable(const std::string &table_name) {
   slash::RWLock l(&tables_rw_, false);
   auto iter = tables_.find(table_name);
   return (iter == tables_.end()) ? NULL : iter->second;
+}
+
+Status PikaServer::DelTableLog(const std::string &table_name) {
+  std::string table_log_path = g_pika_conf->log_path() + "log_" + table_name ;
+  std::string table_log_path_tmp = table_log_path + "_deleting/";
+  if (slash::RenameFile(table_log_path, table_log_path_tmp)) {
+    LOG(WARNING) << "Failed to move log to trash, error: " << strerror(errno);
+    return Status::Corruption("Failed to move log to trash");
+  }
+  PurgeDir(table_log_path_tmp);
+  LOG(WARNING) << "Partition StableLog: " << table_name << " move to trash success";
+  return Status::OK();
 }
 
 std::set<uint32_t> PikaServer::GetTablePartitionIds(const std::string& table_name) {
@@ -850,6 +865,7 @@ bool PikaServer::TryAddSlave(const std::string& ip, int64_t port, int fd,
   s.table_structs = table_structs;
   gettimeofday(&s.create_time, NULL);
   slaves_.push_back(s);
+  BecomeMaster();
   return true;
 }
 
@@ -860,38 +876,11 @@ void PikaServer::SyncError() {
 }
 
 void PikaServer::RemoveMaster() {
-  {
-    slash::RWLock l(&state_protector_, true);
-    repl_state_ = PIKA_REPL_NO_CONNECT;
-    role_ &= ~PIKA_ROLE_SLAVE;
-
-    if (master_ip_ != "" && master_port_ != -1) {
-      g_pika_rm->CloseReplClientConn(master_ip_, master_port_ + kPortShiftReplServer);
-      g_pika_rm->LostConnection(master_ip_, master_port_);
-      loop_partition_state_machine_ = false;
-      UpdateMetaSyncTimestamp();
-      LOG(INFO) << "Remove Master Success, ip_port: " << master_ip_ << ":" << master_port_;
-    }
-
-    master_ip_ = "";
-    master_port_ = -1;
-    DoSameThingEveryPartition(TaskType::kResetReplState);
-  }
+  pika_rm_->RemoveMaster();
 }
 
-bool PikaServer::SetMaster(std::string& master_ip, int master_port) {
-  if (master_ip == "127.0.0.1") {
-    master_ip = host_;
-  }
-  slash::RWLock l(&state_protector_, true);
-  if ((role_ ^ PIKA_ROLE_SLAVE) && repl_state_ == PIKA_REPL_NO_CONNECT) {
-    master_ip_ = master_ip;
-    master_port_ = master_port;
-    role_ |= PIKA_ROLE_SLAVE;
-    repl_state_ = PIKA_REPL_SHOULD_META_SYNC;
-    return true;
-  }
-  return false;
+bool PikaServer::SetMaster(std::string& master_ip, int master_port, bool force_full_sync) {
+  return pika_rm->SetMaster(master_ip, master_port, force_full_sync);
 }
 
 bool PikaServer::ShouldMetaSync() {
@@ -1044,15 +1033,14 @@ void PikaServer::TryDBSync(const std::string& ip, int port,
       << " Not Found, TryDBSync Failed";
     return;
   }
-  std::shared_ptr<SyncMasterPartition> sync_partition
-    = g_pika_rm->GetSyncMasterPartitionByName(PartitionInfo(table_name, partition_id));
-  if (!sync_partition) {
+  std::shared_ptr<CopysetNode> copyset_node = g_pika_rm->GetCopysetNode(PartitionInfo(table_name, partition_id));
+  if (!copyset_node) {
     LOG(WARNING) << "Partition: " << sync_partition->SyncPartitionInfo().ToString()
-      << " Not Found, TryDBSync Failed";
+                 << " Not Found, TryDBSync Failed";
     return;
   }
   BgSaveInfo bgsave_info = partition->bgsave_info();
-  std::string logger_filename = sync_partition->Logger()->filename();
+  std::string logger_filename = copyset_node->Logger()->filename();
   if (slash::IsDir(bgsave_info.path) != 0
     || !slash::FileExists(NewFileName(logger_filename, bgsave_info.offset.b_offset.filenum))
     || top - bgsave_info.offset.b_offset.filenum > kDBSyncMaxGap) {

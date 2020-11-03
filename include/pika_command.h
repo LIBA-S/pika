@@ -14,8 +14,7 @@
 
 #include "include/pika_partition.h"
 
-class SyncMasterPartition;
-class SyncSlavePartition;
+class replica::CopysetNode;
 
 //Constant for command name
 //Admin
@@ -428,11 +427,11 @@ class Cmd: public std::enable_shared_from_this<Cmd> {
   struct ProcessArg {
     ProcessArg() {}
     ProcessArg(std::shared_ptr<Partition> _partition,
-        std::shared_ptr<SyncMasterPartition> _sync_partition,
+        std::shared_ptr<replica::ReplicationGroupNode> _node,
         HintKeys _hint_keys) : partition(_partition),
-        sync_partition(_sync_partition), hint_keys(_hint_keys) {}
+        node(_node), hint_keys(_hint_keys) {}
     std::shared_ptr<Partition> partition;
-    std::shared_ptr<SyncMasterPartition> sync_partition;
+    std::shared_ptr<replica::ReplicationGroupNode> node;
     HintKeys hint_keys;
   };
   Cmd(const std::string& name, int arity, uint16_t flag)
@@ -474,6 +473,7 @@ class Cmd: public std::enable_shared_from_this<Cmd> {
                                uint64_t logic_id,
                                uint32_t filenum,
                                uint64_t offset);
+  virtual std::string ToBinlogContent();
 
   void SetConn(const std::shared_ptr<pink::PinkConn> conn);
   std::shared_ptr<pink::PinkConn> GetConn();
@@ -486,11 +486,11 @@ class Cmd: public std::enable_shared_from_this<Cmd> {
   // enable copy, used default copy
   //Cmd(const Cmd&);
   void ProcessCommand(std::shared_ptr<Partition> partition,
-      std::shared_ptr<SyncMasterPartition> sync_partition, const HintKeys& hint_key = HintKeys());
+      std::shared_ptr<replica::CopysetNode> copyset_node, const HintKeys& hint_key = HintKeys());
   void InternalProcessCommand(std::shared_ptr<Partition> partition,
-      std::shared_ptr<SyncMasterPartition> sync_partition, const HintKeys& hint_key);
+      std::shared_ptr<replica::CopysetNode> copyset_node, const HintKeys& hint_key);
   void DoCommand(std::shared_ptr<Partition> partition, const HintKeys& hint_key);
-  void DoBinlog(std::shared_ptr<SyncMasterPartition> partition);
+  void DoBinlog(std::shared_ptr<replica::CopysetNode> partition);
   bool CheckArg(int num) const;
   void LogCommand() const;
 
@@ -512,6 +512,33 @@ class Cmd: public std::enable_shared_from_this<Cmd> {
 
   Cmd& operator=(const Cmd&);
 };
+
+class LogClosure : public replica::Closure {
+ public:
+  LogClosure(LogOffset offset,
+             replica::CopysetId copyset_id,
+             std::shared_ptr<Cmd> ptr,
+             std::shared_ptr<pink::PinkConn> conn_ptr,
+             std::shared_ptr<std::string> resp_ptr)
+  ~LogClosure();
+
+  virtual void Run() override;
+
+  void SetLogOffset(LogOffset offset) {
+    offset_ = std::move(offset);
+  }
+
+ private
+  LogClosure(const LogClosure&);
+  LogClosure& operator=(const LogClosure&);
+
+  LogOffset offset_;
+  replica::CopysetId copyset_id_;
+  std::shared_ptr<Cmd> cmd_ptr_;
+  std::shared_ptr<pink::PinkConn> conn_ptr_;
+  std::shared_ptr<std::string> resp_ptr_;
+};
+
 
 typedef std::unordered_map<std::string, Cmd*> CmdTable;
 

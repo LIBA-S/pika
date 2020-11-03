@@ -87,7 +87,7 @@ void SlaveofCmd::DoInitial() {
 
   if (argv_.size() == 4) {
     if (!strcasecmp(argv_[3].data(), "force")) {
-      g_pika_server->SetForceFullSync(true);
+      force_full_sync_ = true;
     } else {
       res_.SetRes(CmdRes::kWrongNum, kCmdNameSlaveof);
     }
@@ -110,12 +110,11 @@ void SlaveofCmd::Do(std::shared_ptr<Partition> partition) {
     return;
   }
 
-  bool sm_ret = g_pika_server->SetMaster(master_ip_, master_port_);
+  bool sm_ret = g_pika_server->SetMaster(master_ip_, master_port_, force_full_sync_);
 
   if (sm_ret) {
     res_.SetRes(CmdRes::kOk);
     g_pika_conf->SetSlaveof(master_ip_ + ":" + std::to_string(master_port_));
-    g_pika_server->SetFirstMetaSync(true);
   } else {
     res_.SetRes(CmdRes::kErrOther, "Server is not in correct state for slaveof");
   }
@@ -459,6 +458,18 @@ std::string FlushallCmd::ToBinlog(
                                              offset,
                                              content,
                                              {});
+}
+
+std::string FlushallCmd::ToBinlogContent() {
+  std::string content;
+  content.reserve(RAW_ARGS_LEN);
+  RedisAppendLen(content, 1, "*");
+
+  // to flushdb cmd
+  std::string flushdb_cmd("flushdb");
+  RedisAppendLen(content, flushdb_cmd.size(), "$");
+  RedisAppendContent(content, flushdb_cmd);
+  return std::move(content);
 }
 
 void FlushdbCmd::DoInitial() {

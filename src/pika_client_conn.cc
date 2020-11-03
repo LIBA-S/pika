@@ -87,7 +87,7 @@ std::shared_ptr<Cmd> PikaClientConn::DoCmd(
     }
   }
 
-  if (g_pika_conf->consensus_level() != 0 && c_ptr->is_write()) {
+  if (c_ptr->is_write()) {
     c_ptr->SetStage(Cmd::kBinlogStage);
   }
   if (!g_pika_server->IsCommandSupport(opt)) {
@@ -127,7 +127,7 @@ std::shared_ptr<Cmd> PikaClientConn::DoCmd(
   if (g_pika_conf->slowlog_slower_than() >= 0) {
     ProcessSlowlog(argv, start_us);
   }
-  if (g_pika_conf->consensus_level() != 0 && c_ptr->is_write()) {
+  if (c_ptr->is_write()) {
     c_ptr->SetStage(Cmd::kExecuteStage);
   }
 
@@ -211,8 +211,7 @@ void PikaClientConn::DoExecTask(void* arg) {
   std::shared_ptr<PikaClientConn> conn_ptr = bg_arg->conn_ptr;
   std::shared_ptr<std::string> resp_ptr = bg_arg->resp_ptr;
   LogOffset offset = bg_arg->offset;
-  std::string table_name = bg_arg->table_name;
-  uint32_t partition_id = bg_arg->partition_id;
+  replica::ReplicationGroupID group_id = bg_arg->group_id;
   delete bg_arg;
 
   uint64_t start_us = 0;
@@ -225,13 +224,14 @@ void PikaClientConn::DoExecTask(void* arg) {
     conn_ptr->ProcessSlowlog(cmd_ptr->argv(), start_us);
   }
 
-  std::shared_ptr<SyncMasterPartition> partition =
-    g_pika_rm->GetSyncMasterPartitionByName(PartitionInfo(table_name, partition_id));
-  if (partition == nullptr) {
-    LOG(WARNING) << "Sync Master Partition not exist " << table_name << partition_id;
+  std::shared_ptr<replica::ReplicationGroupNode> node = 
+    g_pika_server->pika_rm_->GetReplicationGroupNode(group_id);
+  if (ReplicationGroup_node == nullptr) {
+    LOG(WARNING) << "Sync Master Partition not exist " << group_id.ToString();
     return;
   }
-  partition->ConsensusUpdateAppliedIndex(offset);
+
+  node->Advance(offset);
 
   if (conn_ptr == nullptr || resp_ptr == nullptr) {
     return;
@@ -283,7 +283,13 @@ void PikaClientConn::ExecRedisCmd(const PikaCmdArgsType& argv, std::shared_ptr<s
 
   std::shared_ptr<Cmd> cmd_ptr = DoCmd(argv, opt, resp_ptr);
   // level == 0 or (cmd error) or (is_read)
-  if (g_pika_conf->consensus_level() == 0 || !cmd_ptr->res().ok() || !cmd_ptr->is_write()) {
+  //if (g_pika_conf->consensus_level() == 0 || !cmd_ptr->res().ok() || !cmd_ptr->is_write()) {
+  //  *resp_ptr = std::move(cmd_ptr->res().message());
+  //  resp_num--;
+  //}
+  
+  // cmd error or is_read, 
+  if (!cmd_ptr->res().ok() || !cmd_ptr->is_write()) {
     *resp_ptr = std::move(cmd_ptr->res().message());
     resp_num--;
   }

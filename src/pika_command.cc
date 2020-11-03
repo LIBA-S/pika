@@ -25,6 +25,34 @@ extern PikaServer* g_pika_server;
 extern PikaReplicaManager* g_pika_rm;
 extern PikaCmdTableManager* g_pika_cmd_table_manager;
 
+LogClosure::LogClosure(
+             LogOffset offset,
+             replica::ReplicationGroupID group_id,
+             std::shared_ptr<Cmd> ptr,
+             std::shared_ptr<pink::PinkConn> conn_ptr,
+             std::shared_ptr<std::string> resp_ptr)
+  : offset_(offset), 
+  group_id_(group_id),
+  cmd_ptr_(ptr),
+  conn_ptr_(conn_ptr),
+  resp_ptr_(resp_ptr) {
+}
+
+LogClosure::~LogClosure() {
+
+}
+
+void LogClosure::Run() {
+  PikaClientConn::BgTaskArg* arg = new PikaClientConn::BgTaskArg();
+  arg->cmd_ptr = cmd_ptr_;
+  arg->conn_ptr = std::dynamic_pointer_cast<PikaClientConn>(conn_ptr_);
+  arg->resp_ptr = resp_ptr_;
+  arg->offset = offset_;
+  arg->group_id = group_id_;
+  g_pika_server->ScheduleClientBgThreads(
+      PikaClientConn::DoExecTask, arg, cmd_ptr->current_key().front());
+}
+
 void InitCmdTable(std::unordered_map<std::string, Cmd*> *cmd_table) {
   //Admin
   ////Slaveof
@@ -554,24 +582,24 @@ void Cmd::ProcessFlushDBCmd() {
   std::shared_ptr<Table> table = g_pika_server->GetTable(table_name_);
   if (!table) {
     res_.SetRes(CmdRes::kInvalidTable);
+    return;
+  }
+  if (table->IsKeyScaning()) {
+    res_.SetRes(CmdRes::kErrOther, "The keyscan operation is executing, Try again later");
   } else {
-    if (table->IsKeyScaning()) {
-      res_.SetRes(CmdRes::kErrOther, "The keyscan operation is executing, Try again later");
-    } else {
-      slash::RWLock l_prw(&table->partitions_rw_, true);
-      slash::RWLock s_prw(&g_pika_rm->partitions_rw_, true);
-      for (const auto& partition_item : table->partitions_) {
-        std::shared_ptr<Partition> partition = partition_item.second;
-        PartitionInfo p_info(partition->GetTableName(), partition->GetPartitionId());
-        if (g_pika_rm->sync_master_partitions_.find(p_info)
-            == g_pika_rm->sync_master_partitions_.end()) {
-          res_.SetRes(CmdRes::kErrOther, "Partition not found");
-          return;
-        }
-        ProcessCommand(partition, g_pika_rm->sync_master_partitions_[p_info]);
+    slash::RWLock l_prw(&table->partitions_rw_, true);
+    slash::RWLock s_prw(&g_pika_rm->partitions_rw_, true);
+    for (const auto& partition_item : table->partitions_) {
+      std::shared_ptr<Partition> partition = partition_item.second;
+      auto node = g_pika_server->pika_rm_->GetReplicationGroupNode(partition->GetTableName(),
+                                                                   partition->GetPartitionId());
+      if (node == nullptr) {
+        res_.SetRes(CmdRes::kErrOther, "Partition not found");
+        return;
       }
-      res_.SetRes(CmdRes::kOk);
+      ProcessCommand(partition, node);
     }
+    res_.SetRes(CmdRes::kOk);
   }
 }
 
@@ -589,13 +617,13 @@ void Cmd::ProcessFlushAllCmd() {
     slash::RWLock s_prw(&g_pika_rm->partitions_rw_, true);
     for (const auto& partition_item : table_item.second->partitions_) {
       std::shared_ptr<Partition> partition = partition_item.second;
-      PartitionInfo p_info(partition->GetTableName(), partition->GetPartitionId());
-      if (g_pika_rm->sync_master_partitions_.find(p_info)
-          == g_pika_rm->sync_master_partitions_.end()) {
+      auto node = g_pika_server->pika_rm_->GetReplicationGroupNode(partition->GetTableName(),
+                                                                   partition->GetPartitionId());
+      if (node == nullptr) {
         res_.SetRes(CmdRes::kErrOther, "Partition not found");
         return;
       }
-      ProcessCommand(partition, g_pika_rm->sync_master_partitions_[p_info]);
+      ProcessCommand(partition, node);
     }
   }
   res_.SetRes(CmdRes::kOk);
@@ -621,32 +649,36 @@ void Cmd::ProcessSinglePartitionCmd() {
     return;
   }
 
-  std::shared_ptr<SyncMasterPartition> sync_partition =
-    g_pika_rm->GetSyncMasterPartitionByName(
-        PartitionInfo(partition->GetTableName(), partition->GetPartitionId()));
-  if (!sync_partition) {
+  std::shared_ptr<groupNode> node =
+    g_pika_rm->GetgroupNode(PartitionInfo(partition->GetTableName(), partition->GetPartitionId()));
+  if (node == nullptr) {
     res_.SetRes(CmdRes::kErrOther, "Partition not found");
     return;
   }
-  ProcessCommand(partition, sync_partition);
+  ProcessCommand(partition, node);
 }
 
 void Cmd::ProcessCommand(std::shared_ptr<Partition> partition,
-    std::shared_ptr<SyncMasterPartition> sync_partition,
+    std::shared_ptr<replica::ReplicationGroupNode> node,
     const HintKeys& hint_keys) {
-  if (stage_ == kNone) {
-    InternalProcessCommand(partition, sync_partition, hint_keys);
-  } else {
-    if (stage_ == kBinlogStage) {
-      DoBinlog(sync_partition);
-    } else if (stage_ == kExecuteStage) {
+  switch state_ {
+    case kNone: {
+      InternalProcessCommand(partition, node, hint_keys);
+      break;
+    }
+    case kBinlogStage: {
+      DoBinlog(node);                  
+      break;
+    }
+    case kExecuteStage: {
       DoCommand(partition, hint_keys);
+      break;
     }
   }
 }
 
 void Cmd::InternalProcessCommand(std::shared_ptr<Partition> partition,
-    std::shared_ptr<SyncMasterPartition> sync_partition, const HintKeys& hint_keys) {
+    std::shared_ptr<replica::ReplicationGroupNode> node, const HintKeys& hint_keys) {
   slash::lock::MultiRecordLock record_lock(partition->LockMgr());
   if (is_write()) {
     if (!hint_keys.empty() && is_multi_partition() &&
@@ -659,7 +691,7 @@ void Cmd::InternalProcessCommand(std::shared_ptr<Partition> partition,
 
   DoCommand(partition, hint_keys);
 
-  DoBinlog(sync_partition);
+  DoBinlog(node);
 
   if (is_write()) {
     if (!hint_keys.empty() && is_multi_partition() &&
@@ -688,7 +720,7 @@ void Cmd::DoCommand(std::shared_ptr<Partition> partition, const HintKeys& hint_k
   }
 }
 
-void Cmd::DoBinlog(std::shared_ptr<SyncMasterPartition> partition) {
+void Cmd::DoBinlog(std::shared_ptr<groupNode> node) {
   if (res().ok()
     && is_write()
     && g_pika_conf->write_binlog()) {
@@ -697,20 +729,36 @@ void Cmd::DoBinlog(std::shared_ptr<SyncMasterPartition> partition) {
     // Consider that dummy cmd appended by system, both conn and resp are null.
     if ((!conn_ptr || !resp_ptr) && (name_ != kCmdDummy)) {
       if (!conn_ptr) {
-        LOG(WARNING) << partition->SyncPartitionInfo().ToString() << " conn empty.";
+        LOG(WARNING) << node->GroupInfo() << " conn empty.";
       }
       if (!resp_ptr) {
-        LOG(WARNING) << partition->SyncPartitionInfo().ToString() << " resp empty.";
+        LOG(WARNING) << node->GroupInfo() << " resp empty.";
       }
       res().SetRes(CmdRes::kErrOther);
       return;
     }
 
-    Status s = partition->ConsensusProposeLog(shared_from_this(),
-        std::dynamic_pointer_cast<PikaClientConn>(conn_ptr), resp_ptr);
+    //Status s = partition->ConsensusProposeLog(shared_from_this(),
+    //    std::dynamic_pointer_cast<PikaClientConn>(conn_ptr), resp_ptr);
+    //if (!s.ok()) {
+    //  LOG(WARNING) << partition->SyncPartitionInfo().ToString()
+    //  << " Writing binlog failed, maybe no space left on device " << s.ToString();
+    //  res().SetRes(CmdRes::kErrOther, s.ToString());
+    //  return;
+    //}
+    std::string log = ToBinlogContent();
+    LogClosure* closure = new LogClosure(LogOffset(),
+                                         node->ReplicationGroupID(),
+                                         shared_from_this(),
+                                         conn_ptr,
+                                         resp_ptr);
+    replica::Task task(std::move(log),
+                       closure,
+                       replica::Task::Type::kClientType);
+    Status s = node->Propose(task);
     if (!s.ok()) {
-      LOG(WARNING) << partition->SyncPartitionInfo().ToString()
-      << " Writing binlog failed, maybe no space left on device " << s.ToString();
+      LOG(WARNING) << node->GroupInfo()
+                   << " Writing binlog failed, maybe no space left on device " << s.ToString();
       res().SetRes(CmdRes::kErrOther, s.ToString());
       return;
     }
@@ -738,21 +786,21 @@ void Cmd::ProcessMultiPartitionCmd() {
     uint32_t partition_id =  g_pika_cmd_table_manager->DistributeKey(key, table->PartitionNum());
     std::unordered_map<uint32_t, ProcessArg>::iterator iter = process_map.find(partition_id);
     if (iter == process_map.end()) {
-      std::shared_ptr<Partition> partition =  table->GetPartitionById(partition_id);
+      std::shared_ptr<Partition> partition = table->GetPartitionById(partition_id);
       if (!partition) {
         res_.SetRes(CmdRes::kErrOther, "Partition not found");
         return;
       }
-      std::shared_ptr<SyncMasterPartition> sync_partition =
-      g_pika_rm->GetSyncMasterPartitionByName(
-          PartitionInfo(partition->GetTableName(), partition->GetPartitionId()));
-      if (!sync_partition) {
+      auto node =
+      g_pika_server->pika_rm_->GetReplicationGroupNode(partition->GetTableName(),
+                                                       partition->GetPartitionId());
+      if (!node) {
         res_.SetRes(CmdRes::kErrOther, "Partition not found");
         return;
       }
       HintKeys hint_keys;
       hint_keys.Push(key, hint);
-      process_map[partition_id] = ProcessArg(partition, sync_partition, hint_keys);
+      process_map[partition_id] = ProcessArg(partition, node, hint_keys);
     } else {
       iter->second.hint_keys.Push(key, hint);
     }
@@ -760,7 +808,7 @@ void Cmd::ProcessMultiPartitionCmd() {
   }
   for (auto& iter : process_map) {
     ProcessArg& arg = iter.second;
-    ProcessCommand(arg.partition, arg.sync_partition, arg.hint_keys);
+    ProcessCommand(arg.partition, arg.node, arg.hint_keys);
     if (!res_.ok()) {
       return;
     }
@@ -844,6 +892,18 @@ std::string Cmd::ToBinlog(uint32_t exec_time,
                                              offset,
                                              content,
                                              {});
+}
+
+std::string Cmd::ToBinlogContent() {
+  std::string content;
+  content.reserve(RAW_ARGS_LEN);
+  RedisAppendLen(content, argv_.size(), "*");
+
+  for (const auto& v : argv_) {
+    RedisAppendLen(content, v.size(), "$");
+    RedisAppendContent(content, v);
+  }
+  return std::move(content);
 }
 
 bool Cmd::CheckArg(int num) const {

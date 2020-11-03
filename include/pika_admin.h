@@ -21,7 +21,7 @@
 class SlaveofCmd : public Cmd {
  public:
   SlaveofCmd(const std::string& name, int arity, uint16_t flag)
-      : Cmd(name, arity, flag), is_noone_(false) {}
+      : Cmd(name, arity, flag), is_noone_(false), force_full_sync_(false) {}
   virtual void Do(std::shared_ptr<Partition> partition = nullptr);
   virtual void Split(std::shared_ptr<Partition> partition, const HintKeys& hint_keys) {};
   virtual void Merge() {};
@@ -33,6 +33,7 @@ class SlaveofCmd : public Cmd {
   std::string master_ip_;
   int64_t master_port_;
   bool is_noone_;
+  bool force_full_sync_;
   virtual void DoInitial() override;
   virtual void Clear() {
     is_noone_ = false;

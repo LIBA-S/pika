@@ -43,12 +43,20 @@ void PikaBinlogReader::GetReaderStatus(uint32_t* cur_filenum, uint64_t* cur_offs
   *cur_offset = cur_offset_;
 }
 
+void PikaBinlogReader::GetProducerStatus(uint32_t* end_filenum, uint64_t* end_offset) {
+  logger_->GetProducerStatus(end_filenum, end_offset);
+}
+
 bool PikaBinlogReader::ReadToTheEnd() {
   uint32_t pro_num;
   uint64_t pro_offset;
   logger_->GetProducerStatus(&pro_num, &pro_offset);
   slash::RWLock(&(rwlock_), false);
   return (pro_num == cur_filenum_ && pro_offset == cur_offset_);
+}
+
+uint64_t PikaBinlogReader::BinlogFileSize() {
+  return logger_->file_size();
 }
 
 int PikaBinlogReader::Seek(std::shared_ptr<Binlog> logger, uint32_t filenum, uint64_t offset) {
